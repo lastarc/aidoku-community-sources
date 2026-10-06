@@ -8,6 +8,12 @@ on:
       - "templates/**"
       - ".github/actions/install-aidoku-cli/**"
       - ".github/workflows/build.yaml"
+  workflow_dispatch:
+    inputs:
+      full_rebuild:
+        description: Rebuild every source instead of reusing published packages
+        type: boolean
+        default: false
 
 concurrency:
   group: ${{ github.workflow }}
@@ -21,6 +27,14 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
+
+      # previously published packages, reused for sources whose version hasn't changed
+      - uses: actions/checkout@v6
+        if: ${{ !inputs.full_rebuild }}
+        continue-on-error: true
+        with:
+          ref: gh-pages
+          path: previous
 
       - uses: dtolnay/rust-toolchain@stable
         with:
@@ -43,20 +57,33 @@ jobs:
         run: |
           set -euo pipefail
 
+          mkdir -p packages
+
           for source in sources/*; do
             [[ -f "$source/Cargo.toml" ]] || continue
+
+            id="$(jq -r .info.id "$source/res/source.json")"
+            version="$(jq -r .info.version "$source/res/source.json")"
+            previous="previous/sources/$id-v$version.aix"
+
+            if [[ -f "$previous" ]]; then
+              echo "Reusing $id v$version"
+              cp "$previous" "packages/$id.aix"
+              continue
+            fi
 
             echo "::group::Packaging $source"
             (
               cd "$source"
               aidoku package
             )
+            cp "$source/package.aix" "packages/$id.aix"
             echo "::endgroup::"
           done
 
       - name: Build source list
         run: |
-          aidoku build sources/*/package.aix --name "Aidoku Community Sources"
+          aidoku build packages/*.aix --name "Aidoku Community Sources"
 
       - name: Deploy to GitHub Pages
         uses: JamesIves/github-pages-deploy-action@v4.7.2
