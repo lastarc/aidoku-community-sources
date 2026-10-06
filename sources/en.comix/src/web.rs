@@ -1,5 +1,5 @@
 // reference: https://github.com/nobottomline/extensions-source/blob/c8fe930f315f3baee23587559edfceab5e969202/src/en/comix/src/eu/kanade/tachiyomi/extension/en/comix/Signer.kt
-use crate::{BASE_URL, helpers::create_request_get, models::ErrorResponse};
+use crate::{helpers::create_request_get, models::ErrorResponse, settings};
 use aidoku::{
 	HashMap, Result,
 	alloc::{string::String, string::ToString, vec::Vec},
@@ -39,19 +39,28 @@ struct AxiosRequest {
 
 pub struct ComixWebView {
 	web_view: WebView,
-	is_initialized: bool,
+	// mirror the webview was loaded from, reloaded when the setting changes
+	initialized_url: Option<String>,
 }
 
 impl ComixWebView {
 	pub fn new() -> Self {
 		Self {
 			web_view: WebView::new(),
-			is_initialized: false,
+			initialized_url: None,
 		}
 	}
 
-	fn load_webview(&mut self) -> Result<()> {
-		let request = create_request_get(BASE_URL)?;
+	fn ensure_loaded(&mut self) -> Result<()> {
+		let base_url = settings::base_url();
+		if self.initialized_url.as_deref() != Some(base_url.as_str()) {
+			self.load_webview(&base_url)?;
+		}
+		Ok(())
+	}
+
+	fn load_webview(&mut self, base_url: &str) -> Result<()> {
+		let request = create_request_get(base_url)?;
 		let response = request.send()?;
 
 		let status_code = response.status_code();
@@ -73,16 +82,16 @@ impl ComixWebView {
 		}
 
 		self.web_view
-			.load_html_blocking(response.get_string()?.as_str(), Some(BASE_URL))?;
+			.load_html_blocking(response.get_string()?.as_str(), Some(base_url))?;
 		if self.find_functions().is_err() {
-			self.find_secure_module_src(&response)?;
+			self.find_secure_module_src(base_url, &response)?;
 			self.find_functions()?;
 		}
-		self.is_initialized = true;
+		self.initialized_url = Some(base_url.into());
 		Ok(())
 	}
 
-	fn find_secure_module_src(&mut self, response: &Response) -> Result<()> {
+	fn find_secure_module_src(&mut self, base_url: &str, response: &Response) -> Result<()> {
 		let main_module_src = response
 			.get_html()?
 			.select("head > script[type=\"module\"][src*=\"main\"]")
@@ -93,13 +102,13 @@ impl ComixWebView {
 			let js_asset_path = &main_module_src[0..js_asset_path_index + 1];
 			let secure_script_regex = Regex::new("(secure-[A-Za-z0-9-_]+?\\.js)").unwrap();
 			let main_module_contents =
-				create_request_get(&format!("{BASE_URL}{main_module_src}"))?.string()?;
+				create_request_get(&format!("{base_url}{main_module_src}"))?.string()?;
 			if let Some(secure_script_path) = secure_script_regex
 				.captures(main_module_contents.as_str())
 				.and_then(|captures| captures.get(1).map(|m| m.as_str()))
 			{
 				let secure_module_contents =
-					create_request_get(&format!("{BASE_URL}{js_asset_path}{secure_script_path}"))?
+					create_request_get(&format!("{base_url}{js_asset_path}{secure_script_path}"))?
 						.string()?;
 				let Some(module_body) = secure_module_contents
 					.rfind("export")
@@ -184,9 +193,7 @@ impl ComixWebView {
 	}
 
 	pub fn build_request(&mut self, url: &str) -> Result<Request> {
-		if !self.is_initialized {
-			self.load_webview()?
-		}
+		self.ensure_loaded()?;
 
 		let result = self.web_view.eval(&format!(
 			"(() => {{
@@ -302,9 +309,7 @@ impl ComixWebView {
 	where
 		T: DeserializeOwned,
 	{
-		if !self.is_initialized {
-			self.load_webview()?;
-		}
+		self.ensure_loaded()?;
 
 		let status_code = response.status_code();
 

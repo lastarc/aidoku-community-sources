@@ -1,4 +1,4 @@
-use crate::{BASE_URL, helpers, settings};
+use crate::{helpers, settings};
 use aidoku::{
 	Chapter, ContentRating, Manga, MangaPageResult, MangaStatus, Viewer,
 	alloc::{String, Vec, string::ToString, vec},
@@ -113,6 +113,7 @@ pub struct ChapterItems {
 #[derive(Deserialize)]
 pub struct TagSearchItem {
 	pub id: i32,
+	pub label: String,
 }
 
 #[derive(Deserialize)]
@@ -194,7 +195,11 @@ impl ComixManga {
 
 impl From<ComixManga> for Manga {
 	fn from(value: ComixManga) -> Self {
-		let url = format!("{BASE_URL}/{}", value.url.trim_start_matches('/'));
+		let url = format!(
+			"{}/{}",
+			settings::base_url(),
+			value.url.trim_start_matches('/')
+		);
 		Self {
 			key: value.hid,
 			title: value.title,
@@ -278,7 +283,11 @@ impl From<ComixChapter> for Chapter {
 			} else {
 				None
 			},
-			url: Some(format!("{BASE_URL}/{}", value.url.trim_start_matches('/'))),
+			url: Some(format!(
+				"{}/{}",
+				settings::base_url(),
+				value.url.trim_start_matches('/')
+			)),
 			..Default::default()
 		}
 	}

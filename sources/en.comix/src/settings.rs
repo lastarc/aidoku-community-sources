@@ -1,9 +1,10 @@
-use crate::VERIFY_COOKIE_KEY;
+use crate::{BASE_URL, VERIFY_COOKIE_KEY};
 use aidoku::{
-	alloc::{string::String, vec::Vec},
+	alloc::{format, string::String, vec::Vec},
 	imports::defaults::{DefaultValue, defaults_get, defaults_get_map, defaults_set},
 };
 
+const URL_KEY: &str = "url";
 const HIDE_NSFW_KEY: &str = "hideNSFW";
 const THUMBNAIL_QUALITY_KEY: &str = "thumbnailQuality";
 const DEDUPED_CHAPTER_KEY: &str = "dedupedChapter";
@@ -13,6 +14,17 @@ const HIDDEN_GENRES_KEY: &str = "hiddenGenres";
 const HIDDEN_THEMES_KEY: &str = "hiddenThemes";
 
 pub const VERIFY_KEY: &str = "verify";
+
+pub fn base_url() -> String {
+	defaults_get::<String>(URL_KEY)
+		.map(|url| url.trim_end_matches('/').into())
+		.filter(|url: &String| !url.is_empty())
+		.unwrap_or_else(|| BASE_URL.into())
+}
+
+pub fn api_url() -> String {
+	format!("{}/api/v1", base_url())
+}
 
 pub fn hide_nsfw() -> bool {
 	defaults_get::<bool>(HIDE_NSFW_KEY).unwrap_or(true)

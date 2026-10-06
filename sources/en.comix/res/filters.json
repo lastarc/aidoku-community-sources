@@ -3,13 +3,40 @@
 		"type": "text",
 		"id": "author",
 		"title": "Author",
-		"placeholder": "Author Name"
+		"placeholder": "Names, comma separated"
 	},
 	{
 		"type": "text",
 		"id": "artist",
 		"title": "Artist",
-		"placeholder": "Artist Name"
+		"placeholder": "Names, comma separated"
+	},
+	{
+		"type": "text",
+		"id": "tag",
+		"title": "Tags",
+		"placeholder": "Tags, comma separated"
+	},
+	{
+		"type": "range",
+		"id": "year",
+		"title": "Release Year",
+		"min": 1900,
+		"decimal": false
+	},
+	{
+		"type": "text",
+		"id": "min_chap",
+		"title": "Minimum Chapters",
+		"placeholder": "e.g. 50"
+	},
+	{
+		"type": "multi-select",
+		"id": "content_rating[]",
+		"title": "Content Rating",
+		"canExclude": false,
+		"options": ["Safe", "Suggestive", "Erotica", "Pornographic"],
+		"ids": ["safe", "suggestive", "erotica", "pornographic"]
 	},
 	{
 		"type": "sort",
