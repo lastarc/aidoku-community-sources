@@ -67,18 +67,17 @@ impl Source for Comix {
 			match filter {
 				FilterValue::Text { id, value } => {
 					let url = format!(
-						"{API_URL}/terms?type={id}&keyword={}&limit=1",
+						"{API_URL}/tags/search?type={id}&q={}&limit=1",
 						encode_uri_component(value)
 					);
-					let response = web_view.build_request(&url)?.send()?;
-					web_view
+					let response = helpers::create_request_get(&url)?.send()?;
+					let term_id = web_view
 						.decode_json_owned::<TermResponse>(&response)?
 						.result
-						.items
 						.first()
 						.map(|t| t.id)
 						.ok_or_else(|| error!("No matching {id}s"))?;
-					qs.push(&format!("{id}s[]"), Some(&id.to_string()));
+					qs.push(&format!("{id}s[]"), Some(&term_id.to_string()));
 				}
 				FilterValue::Sort {
 					id,

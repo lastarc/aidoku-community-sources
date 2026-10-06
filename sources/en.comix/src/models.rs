@@ -65,7 +65,7 @@ pub struct ChapterResponse {
 
 #[derive(Deserialize)]
 pub struct TermResponse {
-	pub result: TermItems,
+	pub result: Vec<TagSearchItem>,
 }
 
 #[derive(Deserialize)]
@@ -111,9 +111,8 @@ pub struct ChapterItems {
 }
 
 #[derive(Deserialize)]
-pub struct TermItems {
-	pub items: Vec<Term>,
-	// pub pagination: Pagination,
+pub struct TagSearchItem {
+	pub id: i32,
 }
 
 #[derive(Deserialize)]
