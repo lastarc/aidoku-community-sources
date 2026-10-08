@@ -121,8 +121,10 @@ impl ComixWebView {
 				else {
 					bail!("Secure module exports not found");
 				};
-				let result = self.web_view.eval(&format!(
-					"(() => {{
+				let result = self
+					.web_view
+					.eval(&format!(
+						"(() => {{
 						try {{
 							{module_body}
 							return 'ok';
@@ -130,7 +132,8 @@ impl ComixWebView {
 							return 'error: ' + e;
 						}}
 					}})()"
-				))?;
+					))
+					.map_err(|e| error!("Failed to load secure module: {e:?}"))?;
 				if result != "ok" {
 					bail!("Failed to load secure module: {result}");
 				}
@@ -144,8 +147,10 @@ impl ComixWebView {
 	}
 
 	fn find_functions(&mut self) -> Result<()> {
-		let result = self.web_view.eval(&format!(
-			"(() => {{
+		let result = self
+			.web_view
+			.eval(&format!(
+				"(() => {{
 			try {{
 				{GET_VMOBJ_JS}
 				let fnames = Object.keys(vmObj);
@@ -184,7 +189,8 @@ impl ComixWebView {
 			}} catch (e) {{}}
 			return '';
 		}})()",
-		))?;
+			))
+			.map_err(|e| error!("Failed to find installer function: {e:?}"))?;
 		let expr: Vec<&str> = result.split("||").collect();
 		if expr.is_empty() || expr[0].is_empty() {
 			bail!("Failed to find installer function");
@@ -192,11 +198,18 @@ impl ComixWebView {
 		Ok(())
 	}
 
-	pub fn build_request(&mut self, url: &str) -> Result<Request> {
-		self.ensure_loaded()?;
-
-		let result = self.web_view.eval(&format!(
+	/// Runs the site's request interceptor on `url`, returning the axios config as json,
+	/// `missing` when the interceptor isn't installed, or `error: ...` when it throws.
+	fn sign_request(
+		&self,
+		url: &str,
+	) -> core::result::Result<String, aidoku::imports::js::JsError> {
+		self.web_view.eval(&format!(
 			"(() => {{
+			if (typeof window['{INSTALLER_REQUEST_TOKEN}'] !== 'function') {{
+				return 'missing';
+			}}
+			try {{
 			const url = new URL('{url}');
 			const result = {{}};
 
@@ -239,8 +252,32 @@ impl ComixWebView {
 			}});
 
 			return JSON.stringify(request);
+			}} catch (e) {{
+				return 'error: ' + e;
+			}}
 		}})()"
-		))?;
+		))
+	}
+
+	pub fn build_request(&mut self, url: &str) -> Result<Request> {
+		self.ensure_loaded()?;
+
+		// the webview can lose its state (e.g. a reload), so set it up again once if needed
+		let result = match self.sign_request(url) {
+			Ok(result) if result != "missing" => result,
+			_ => {
+				self.initialized_url = None;
+				self.ensure_loaded()?;
+				self.sign_request(url)
+					.map_err(|e| error!("Failed to sign request: {e:?}"))?
+			}
+		};
+		if result == "missing" {
+			bail!("Request signer missing after reloading the webview");
+		}
+		if let Some(error) = result.strip_prefix("error: ") {
+			bail!("Failed to sign request: {error}");
+		}
 
 		let axios_request: AxiosRequest = serde_json::from_str(result.as_str())?;
 
@@ -334,8 +371,10 @@ impl ComixWebView {
 				.replace("\\", "\\\\")
 				.replace("'", "\\'");
 
-			let result = self.web_view.eval(&format!(
-				"(() => {{
+			let result = self
+				.web_view
+				.eval(&format!(
+					"(() => {{
 					try {{
 						let decoded = window['{INSTALLER_RESPONSE_TOKEN}']({{
 							data: JSON.parse('{encoded_response}'),
@@ -349,7 +388,8 @@ impl ComixWebView {
 						return 'error: ' + e;
 					}}
 				}})()",
-			))?;
+				))
+				.map_err(|e| error!("Failed to decode response: {e:?}"))?;
 
 			if result.starts_with("error:") {
 				bail!("{result}");
