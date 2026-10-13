@@ -594,11 +594,12 @@ impl WebLoginHandler for Comix {
 			// We need to intercept waf_pass cookie so that we can pass the checks.
 			// This will not log you in even if you do the login page afterward.
 			return Ok(cookies.get(VERIFY_COOKIE_KEY).is_some_and(|pass| {
-				let Some((timestamp, _)) = pass.split_once('.') else {
-					return false;
-				};
-				let current_timestamp = current_date();
-				current_timestamp - timestamp.parse::<i64>().unwrap_or(0) < 30 * 60
+				// older passes were `<timestamp>.<signature>` and only valid for 30 minutes,
+				// newer ones are an opaque token that the site expires on its own
+				match pass.split_once('.').map(|(t, _)| t.parse::<i64>()) {
+					Some(Ok(timestamp)) => current_date() - timestamp < 30 * 60,
+					_ => !pass.is_empty(),
+				}
 			}));
 		}
 

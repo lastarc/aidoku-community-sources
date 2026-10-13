@@ -232,6 +232,6 @@
 				]
 			}
 		],
-		"footer": "Please use this button to resolve captcha issues that can cause the source to fail to load. The result is only valid for 30 minutes, so you may have to repeat this process. This button is not for Account Login!"
+		"footer": "Please use this button to resolve captcha issues that can cause the source to fail to load. The result expires after a while, so you may have to repeat this process. This button is not for Account Login!"
 	}
 ]
