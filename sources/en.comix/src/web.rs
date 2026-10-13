@@ -72,7 +72,7 @@ impl ComixWebView {
 		{
 			bail!("{CF_CHALLENGE_HTML_ERROR_MESSAGE}")
 		} else if status_code >= 400 {
-			bail!("Response Error: {}", response.status_code())
+			bail!("{}", describe_error(&response))
 		} else if response
 			.get_html()?
 			.select_first("head > title")
@@ -363,7 +363,7 @@ impl ComixWebView {
 			{
 				bail!("{}", WAF_CHALLENGE_ERROR_MESSAGE)
 			} else {
-				bail!("Response Error: {}", response.status_code())
+				bail!("{}", describe_error(response))
 			}
 		} else if let Some(enc) = response.get_header("x-enc") {
 			let encoded_response = response
@@ -403,4 +403,24 @@ impl ComixWebView {
 			serde_json::from_str(&json_str).map_err(|e| error!("Invalid json: {}", e))
 		}
 	}
+}
+
+/// Error message for a failed response, noting who answered and what they said so
+/// gateway errors from cloudflare can be told apart from ones from the site itself
+fn describe_error(response: &Response) -> String {
+	let server = response
+		.get_header("server")
+		.unwrap_or_else(|| "unknown".into());
+	let body = response.get_string().unwrap_or_default();
+	let detail = match (body.find("<title>"), body.find("</title>")) {
+		(Some(start), Some(end)) if start < end => &body[start + 7..end],
+		_ => body
+			.get(..body.floor_char_boundary(100))
+			.unwrap_or_default(),
+	};
+	let detail = detail.split_whitespace().collect::<Vec<_>>().join(" ");
+	format!(
+		"Response Error: {} (server: {server}, {detail})",
+		response.status_code()
+	)
 }
