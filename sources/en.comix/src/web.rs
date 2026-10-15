@@ -1,12 +1,13 @@
 // reference: https://github.com/nobottomline/extensions-source/blob/c8fe930f315f3baee23587559edfceab5e969202/src/en/comix/src/eu/kanade/tachiyomi/extension/en/comix/Signer.kt
-use crate::{helpers::create_request_get, models::ErrorResponse, settings};
+use crate::{helpers::create_request_get, settings};
 use aidoku::{
 	HashMap, Result,
 	alloc::{string::String, string::ToString, vec::Vec},
 	helpers::uri::QueryParameters,
 	imports::{
 		js::WebView,
-		net::{Request, Response},
+		net::Response,
+		std::{current_date, sleep},
 	},
 	prelude::*,
 };
@@ -31,6 +32,32 @@ const WAF_CHALLENGE_KEY: &str = "captcha_required";
 const WAF_CHALLENGE_HTML_ERROR_MESSAGE: &str = "Response returned WAF challenge page. Please open Comix Settings and Verify Captcha to resolve this issue.";
 const WAF_CHALLENGE_ERROR_MESSAGE: &str = "Response returned WAF challenge page instead of JSON data. Please open Comix Settings and Verify Captcha to resolve this issue.";
 
+const CHAPTER_LIST_INTERVAL_SECS: i64 = 3;
+const SERVER_ERROR_CODES: &[u16] = &[502, 503, 522, 523];
+const SERVER_ERROR_RETRIES: usize = 2;
+const SERVER_ERROR_RETRY_SECS: i32 = 2;
+
+#[derive(Deserialize)]
+struct FetchResult {
+	status: u16,
+	cf: Option<String>,
+	server: Option<String>,
+	detail: Option<String>,
+	data: Option<Value>,
+}
+
+impl FetchResult {
+	fn is_waf_challenge(&self) -> bool {
+		self.status == 403
+			&& self
+				.data
+				.as_ref()
+				.and_then(|data| data.get("error"))
+				.and_then(Value::as_str)
+				== Some(WAF_CHALLENGE_KEY)
+	}
+}
+
 #[derive(Deserialize)]
 struct AxiosRequest {
 	url: String,
@@ -41,6 +68,7 @@ pub struct ComixWebView {
 	web_view: WebView,
 	// mirror the webview was loaded from, reloaded when the setting changes
 	initialized_url: Option<String>,
+	next_chapter_list_at: i64,
 }
 
 impl ComixWebView {
@@ -48,6 +76,7 @@ impl ComixWebView {
 		Self {
 			web_view: WebView::new(),
 			initialized_url: None,
+			next_chapter_list_at: 0,
 		}
 	}
 
@@ -259,7 +288,8 @@ impl ComixWebView {
 		))
 	}
 
-	pub fn build_request(&mut self, url: &str) -> Result<Request> {
+	/// Signs `url` with the site's request interceptor, returning the url to request.
+	fn sign_url(&mut self, url: &str) -> Result<String> {
 		self.ensure_loaded()?;
 
 		// the webview can lose its state (e.g. a reload), so set it up again once if needed
@@ -336,71 +366,106 @@ impl ComixWebView {
 
 		if let Some(params) = axios_request.params {
 			let query = build_query(&params);
-			create_request_get(&format!("{}?{query}", axios_request.url))
+			Ok(format!("{}?{query}", axios_request.url))
 		} else {
-			create_request_get(&axios_request.url)
+			Ok(axios_request.url)
 		}
 	}
 
-	pub fn decode_json_owned<T>(&mut self, response: &Response) -> Result<T>
+	/// Waits until the next chapter list request is allowed, as the site blocks clients
+	/// that page through chapter lists too quickly (e.g. during library refreshes).
+	pub fn pace_chapter_list(&mut self) {
+		let now = current_date();
+		let wait = self.next_chapter_list_at - now;
+		if wait > 0 {
+			sleep(wait as i32);
+		}
+		self.next_chapter_list_at = now.max(self.next_chapter_list_at) + CHAPTER_LIST_INTERVAL_SECS;
+	}
+
+	/// Requests `url` from inside the webview, like the site itself does, and returns the
+	/// decoded json. Requests made outside of it get answered with 502s by the site.
+	pub fn fetch_json<T>(&mut self, url: &str) -> Result<T>
 	where
 		T: DeserializeOwned,
 	{
-		self.ensure_loaded()?;
-
-		let status_code = response.status_code();
-
-		if status_code == 403
-			&& response
-				.get_header("cf-mitigated")
-				.is_some_and(|value| value == "challenge")
-		{
+		let fetched = self.fetch(url)?;
+		if fetched.status == 403 && fetched.cf.as_deref() == Some("challenge") {
 			bail!("{CF_CHALLENGE_ERROR_MESSAGE}")
-		} else if status_code >= 400 {
-			if response.status_code() == 403
-				&& serde_json::from_slice::<ErrorResponse>(&response.get_data()?)
-					.is_ok_and(|e| e.error == WAF_CHALLENGE_KEY)
-			{
-				bail!("{}", WAF_CHALLENGE_ERROR_MESSAGE)
-			} else {
-				bail!("{}", describe_error(response))
-			}
-		} else if let Some(enc) = response.get_header("x-enc") {
-			let encoded_response = response
-				.get_string()?
-				.replace("\\", "\\\\")
-				.replace("'", "\\'");
+		} else if fetched.is_waf_challenge() {
+			bail!("{WAF_CHALLENGE_ERROR_MESSAGE}")
+		} else if !(200..300).contains(&fetched.status) {
+			bail!(
+				"Response Error: {} (server: {}, {})",
+				fetched.status,
+				fetched.server.as_deref().unwrap_or("unknown"),
+				fetched.detail.as_deref().unwrap_or_default()
+			)
+		}
 
+		serde_json::from_value(fetched.data.unwrap_or_default())
+			.map_err(|e| error!("Invalid json: {}", e))
+	}
+
+	/// Whether the site still asks for its captcha, checked with a small chapter list request
+	/// as the captcha guards chapters and not the home page.
+	pub fn needs_captcha(&mut self) -> bool {
+		let url = format!("{}/manga/pvry/chapters?limit=1", settings::api_url());
+		self.fetch(&url)
+			.is_ok_and(|fetched| fetched.is_waf_challenge())
+	}
+
+	fn fetch(&mut self, url: &str) -> Result<FetchResult> {
+		let mut attempt = 0;
+		loop {
+			let signed_url = self.sign_url(url)?;
 			let result = self
 				.web_view
 				.eval(&format!(
 					"(() => {{
 					try {{
-						let decoded = window['{INSTALLER_RESPONSE_TOKEN}']({{
-							data: JSON.parse('{encoded_response}'),
-							status: 200,
-							headers: {{
-								'x-enc': '{enc}',
-							}},
-						}});
-						return JSON.stringify({{ result: decoded && decoded.data }});
-					}} catch(e) {{
-						return 'error: ' + e;
+						const xhr = new XMLHttpRequest();
+						xhr.open('GET', {url}, false);
+						xhr.setRequestHeader('Accept', 'application/json, text/plain, */*');
+						// the site raises this when it thinks requests are automated
+						xhr.setRequestHeader('X-Rt', '0');
+						xhr.send();
+						const result = {{
+							status: xhr.status,
+							cf: xhr.getResponseHeader('cf-mitigated'),
+							server: xhr.getResponseHeader('server'),
+						}};
+						try {{
+							result.data = JSON.parse(xhr.responseText);
+						}} catch (e) {{
+							const title = /<title>([^<]*)/i.exec(xhr.responseText);
+							result.detail = (title ? title[1] : xhr.responseText.slice(0, 100)).trim();
+						}}
+						const enc = xhr.getResponseHeader('x-enc');
+						if (enc && result.data && xhr.status === 200) {{
+							const decoded = window['{INSTALLER_RESPONSE_TOKEN}']({{
+								data: result.data,
+								status: 200,
+								headers: {{ 'x-enc': enc }},
+							}});
+							result.data = {{ result: decoded && decoded.data }};
+						}}
+						return JSON.stringify(result);
+					}} catch (e) {{
+						return JSON.stringify({{ status: 0, detail: 'error: ' + e }});
 					}}
 				}})()",
+					url = serde_json::to_string(&signed_url)?,
 				))
-				.map_err(|e| error!("Failed to decode response: {e:?}"))?;
+				.map_err(|e| error!("Failed to request {url}: {e:?}"))?;
+			let fetched: FetchResult = serde_json::from_str(&result)?;
 
-			if result.starts_with("error:") {
-				bail!("{result}");
-			} else if result.is_empty() {
-				bail!("Failed to fetch result")
+			if SERVER_ERROR_CODES.contains(&fetched.status) && attempt < SERVER_ERROR_RETRIES {
+				attempt += 1;
+				sleep(SERVER_ERROR_RETRY_SECS);
+				continue;
 			}
-
-			serde_json::from_str(&result).map_err(|e| error!("Invalid json: {}", e))
-		} else {
-			let json_str = response.get_string()?;
-			serde_json::from_str(&json_str).map_err(|e| error!("Invalid json: {}", e))
+			return Ok(fetched);
 		}
 	}
 }

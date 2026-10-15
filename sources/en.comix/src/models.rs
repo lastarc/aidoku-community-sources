@@ -7,11 +7,6 @@ use aidoku::{
 use serde::{Deserialize, Deserializer, de};
 
 #[derive(Deserialize)]
-pub struct ErrorResponse {
-	pub error: String,
-}
-
-#[derive(Deserialize)]
 pub struct SearchResponse {
 	#[serde(deserialize_with = "manga_items_or_vec")]
 	pub result: MangaItems,
