@@ -1,4 +1,4 @@
-use crate::{BASE_URL, net::Url};
+use crate::{base_url, net::Url};
 use aidoku::{
 	Manga, MangaPageResult, MangaStatus, Page, Result, Viewer,
 	alloc::{String, Vec, string::ToString as _, vec},
@@ -7,36 +7,31 @@ use aidoku::{
 	prelude::*,
 };
 use regex::Regex;
+use spin::Lazy;
+
+// Compile the regexes once instead of per chapter to keep the details call
+// fast on interpreted runtimes (see Aidoku-Community/sources#829).
+static CHAPTER_RES: Lazy<[Regex; 3]> = Lazy::new(|| {
+	#[expect(clippy::unwrap_used)]
+	[
+		// This handles cases like "第183话 180" where 180 is the actual chapter
+		Regex::new(r"(?:第\s*\d+(?:\.\d+)?\s*(?:话|話|章|回|卷|册|冊)\s*)(\d+(?:\.\d+)?)").unwrap(),
+		// Second try: match "第X话" pattern where X is the chapter number
+		Regex::new(r"(?:第\s*)(\d+(?:\.\d+)?)\s*(?:话|話|章|回|卷|册|冊)").unwrap(),
+		// Third try: match pure number at the beginning
+		Regex::new(r"^(\d+(?:\.\d+)?)").unwrap(),
+	]
+});
 
 fn extract_chapter_number(title: &str) -> Option<f32> {
-	// This handles cases like "第183话 180" where 180 is the actual chapter
-	let re1 =
-		Regex::new(r"(?:第\s*\d+(?:\.\d+)?\s*(?:话|話|章|回|卷|册|冊)\s*)(\d+(?:\.\d+)?)").ok()?;
-	if let Some(captures) = re1.captures(title)
-		&& let Some(num_match) = captures.get(1)
-		&& let Ok(num) = num_match.as_str().parse::<f32>()
-	{
-		return Some(num);
+	for re in CHAPTER_RES.iter() {
+		if let Some(captures) = re.captures(title)
+			&& let Some(num_match) = captures.get(1)
+			&& let Ok(num) = num_match.as_str().parse::<f32>()
+		{
+			return Some(num);
+		}
 	}
-
-	// Second try: match "第X话" pattern where X is the chapter number
-	let re2 = Regex::new(r"(?:第\s*)(\d+(?:\.\d+)?)\s*(?:话|話|章|回|卷|册|冊)").ok()?;
-	if let Some(captures) = re2.captures(title)
-		&& let Some(num_match) = captures.get(1)
-		&& let Ok(num) = num_match.as_str().parse::<f32>()
-	{
-		return Some(num);
-	}
-
-	// Third try: match pure number at the beginning
-	let re3 = Regex::new(r"^(\d+(?:\.\d+)?)").ok()?;
-	if let Some(captures) = re3.captures(title)
-		&& let Some(num_match) = captures.get(1)
-		&& let Ok(num) = num_match.as_str().parse::<f32>()
-	{
-		return Some(num);
-	}
-
 	None
 }
 
@@ -129,7 +124,7 @@ impl MangaPage for Document {
 			_ => MangaStatus::Unknown,
 		};
 
-		manga.url = Some(Url::manga(manga.key.clone()).to_string());
+		manga.url = Some(Url::manga(manga.key.clone()).to_string()?);
 		Ok(())
 	}
 
@@ -167,37 +162,11 @@ impl MangaPage for Document {
 				.and_then(|h3| h3.text())
 				.unwrap_or_default();
 
-			let artist = item
-				.select_first("small")
-				.and_then(|small| small.text())
-				.map(|text| {
-					let mut artists: Vec<String> = text
-						.split(',')
-						.map(|s| s.trim().to_string())
-						.filter(|s| !s.is_empty())
-						.collect();
-					artists.dedup();
-					artists.join(", ")
-				})
-				.unwrap_or_default();
-
-			let tags = item
-				.select("span")
-				.map(|spans| {
-					spans
-						.filter_map(|span| span.text())
-						.filter(|t| !t.is_empty())
-						.collect::<Vec<String>>()
-				})
-				.unwrap_or_default();
-
 			entries.push(Manga {
 				key,
 				cover,
 				title,
-				authors: Some(vec![artist]),
-				url: Some(format!("{}{}", BASE_URL, url)),
-				tags: Some(tags),
+				url: Some(format!("{}{}", base_url(), url)),
 				..Default::default()
 			});
 		}
@@ -266,7 +235,7 @@ impl ChapterPage for Document {
 				title: Some(title),
 				volume_number: (vo >= 0.0).then_some(vo),
 				chapter_number: (ch >= 0.0).then_some(ch),
-				url: Some(format!("{}{}", BASE_URL, url)),
+				url: Some(format!("{}{}", base_url(), url)),
 				scanlators: Some(vec![scanlator]),
 				..Default::default()
 			});
@@ -290,7 +259,7 @@ pub trait PageList {
 
 impl PageList for Document {
 	fn pages(&self) -> Result<Vec<Page>> {
-		let items = self.try_select("img.comic-contain__item")?;
+		let items = self.try_select("amp-img.comic-contain__item")?;
 
 		let pages = items
 			.filter_map(|item| {

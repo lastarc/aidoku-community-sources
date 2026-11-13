@@ -44,6 +44,10 @@ impl Source for Mangadotnet {
 			query_parameters.push("search", query.as_deref());
 		}
 
+		if hide_nsfw() {
+			query_parameters.push("hide_adult", "1".into())
+		}
+
 		for filter in filters {
 			match filter {
 				FilterValue::Text { id, value } => {
@@ -54,7 +58,13 @@ impl Source for Mangadotnet {
 					index, ascending, ..
 				} => {
 					let value = match index {
-						0 => "relevance",
+						0 => {
+							if query.is_none() {
+								"latest"
+							} else {
+								"relevance"
+							}
+						}
 						1 => "latest",
 						2 => "alphabetical",
 						3 => "chapters",
@@ -72,7 +82,27 @@ impl Source for Mangadotnet {
 				}
 
 				FilterValue::Select { id, value } => {
-					query_parameters.push(&id, Some(&value));
+					if page == 1 && id == "genre" {
+						if value.starts_with("Tag:") {
+							query_parameters.push("tag", Some(&value[5..]));
+						} else {
+							query_parameters.push(&id, Some(&value));
+						}
+					} else {
+						let mut new_id = id.as_str();
+						let mut new_value = value.as_str();
+
+						if id == "genre" {
+							new_id = "genres";
+
+							if value.starts_with("Tag:") {
+								new_id = "tags";
+								new_value = &new_value[5..]
+							}
+						}
+
+						query_parameters.push(new_id, Some(new_value));
+					}
 				}
 
 				FilterValue::MultiSelect {
@@ -91,17 +121,21 @@ impl Source for Mangadotnet {
 						}
 					} else {
 						let mut items = Vec::new();
+						let mut new_id = id.as_str();
+
+						if id == "genre" {
+							new_id = "genres";
+						}
 
 						for include_id in included {
 							items.push(include_id)
 						}
 
 						for excluded_id in excluded {
-							let id = format!("-{excluded_id}");
-							items.push(id)
+							items.push(format!("-{excluded_id}"))
 						}
 
-						query_parameters.push(&id, Some(&items.join(",")));
+						query_parameters.push(new_id, Some(&items.join(",")));
 					}
 				}
 
@@ -136,6 +170,7 @@ impl Source for Mangadotnet {
 			}
 		} else {
 			// Requires new search api, or it doesn't work...
+			query_parameters.push("limit", Some("28"));
 			query_parameters.push("cursor", self.cursor.borrow().as_deref());
 
 			let payload: SearchPayload =
@@ -185,31 +220,26 @@ impl Source for Mangadotnet {
 			let json: Vec<MangaChapter> =
 				get_json_data(&format!("{BASE_URL}/api/manga/{}/chapters/list", manga.key))?;
 
-			let mut chapter_map: HashMap<String, MangaChapter> = HashMap::new();
-			let mut chapter_list: Vec<MangaChapter> = Vec::new();
-
 			let supported_languages = get_languages()?;
 			let default_language = "en".into();
 
-			if deduped_chapter() {
-				for manga in json {
-					let manga_language = manga.language.as_ref().unwrap_or(&default_language);
-					if supported_languages
-						.iter()
-						.any(|language| language.eq(manga_language))
-					{
-						dedup_insert(&mut chapter_map, manga);
+			let mut chapters: Vec<Chapter> = if deduped_chapter() {
+				let mut chapter_list: Vec<MangaChapter> = Vec::new();
+
+				for chapter in json {
+					if supported_languages.iter().any(|language| {
+						language.eq(chapter.language.as_ref().unwrap_or(&default_language))
+					}) {
+						chapter_list.push(chapter);
 					}
 				}
-			} else {
-				chapter_list.extend(json);
-			}
 
-			let mut chapters: Vec<Chapter> = if deduped_chapter() {
-				chapter_map.into_values().map(Into::into).collect()
-			} else {
-				chapter_list
+				build_dedupe_chapters(chapter_list)
 					.into_iter()
+					.map(Into::into)
+					.collect()
+			} else {
+				json.into_iter()
 					.filter(|c| {
 						supported_languages.iter().any(|language| {
 							language.eq(c.language.as_ref().unwrap_or(&default_language))
@@ -236,28 +266,19 @@ impl Source for Mangadotnet {
 			}
 
 			chapters.sort_by(|a, b| {
-				// 1) volume descending (None goes last)
-				match b
-					.volume_number
-					.partial_cmp(&a.volume_number)
-					.unwrap_or(Ordering::Equal)
-				{
-					Ordering::Equal => {
-						match (&a.chapter_number, &b.chapter_number) {
-							// 2) both have chapter numbers -> chapter descending
-							(Some(a_ch), Some(b_ch)) => {
-								b_ch.partial_cmp(a_ch).unwrap_or(Ordering::Equal)
-							}
+				match (&a.chapter_number, &b.chapter_number) {
+					// Both volume-only: volume descending
+					(None, None) => b
+						.volume_number
+						.partial_cmp(&a.volume_number)
+						.unwrap_or(Ordering::Equal),
 
-							// 3) chapter entries come before volume-only entries
-							(Some(_), None) => Ordering::Less,
-							(None, Some(_)) => Ordering::Greater,
+					// Volume-only entries first
+					(None, Some(_)) => Ordering::Less,
+					(Some(_), None) => Ordering::Greater,
 
-							// 4) both volume-only
-							(None, None) => Ordering::Equal,
-						}
-					}
-					ord => ord,
+					// Both have chapter numbers: chapter descending
+					(Some(a_ch), Some(b_ch)) => b_ch.partial_cmp(a_ch).unwrap_or(Ordering::Equal),
 				}
 			});
 
@@ -306,8 +327,7 @@ impl ListingProvider for Mangadotnet {
 						.into_iter()
 						.map(Into::into)
 						.collect(),
-					has_next_page: bookmark_page_data.page * bookmark_page_data.per_page
-						< bookmark_page_data.total,
+					has_next_page: page * 50 < bookmark_page_data.total,
 				})
 			}
 

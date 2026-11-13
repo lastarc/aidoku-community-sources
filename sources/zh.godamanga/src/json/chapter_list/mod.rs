@@ -1,4 +1,4 @@
-use crate::{API_URL, BASE_URL};
+use crate::{API_URL, base_url};
 use aidoku::{
 	Chapter, Result,
 	alloc::{Vec, string::ToString as _, vec},
@@ -8,37 +8,32 @@ use aidoku::{
 };
 use chrono::DateTime;
 use regex::Regex;
+use spin::Lazy;
+
+// Compile the regexes once instead of per chapter to keep the details call
+// fast on interpreted runtimes
+static CHAPTER_RES: Lazy<[Regex; 3]> = Lazy::new(|| {
+	#[expect(clippy::unwrap_used)]
+	[
+		// This handles cases like "第183话 180" where 180 is the actual chapter
+		Regex::new(r"(?:第\s*\d+(?:\.\d+)?\s*(?:话|話|章|回|卷|册|冊)\s*)(\d+(?:\.\d+)?)").unwrap(),
+		// Second try: match "第X话" pattern where X is the chapter number
+		Regex::new(r"(?:第\s*)(\d+(?:\.\d+)?)\s*(?:话|話|章|回|卷|册|冊)").unwrap(),
+		// Third try: match pure number at the beginning
+		Regex::new(r"^(\d+(?:\.\d+)?)").unwrap(),
+	]
+});
 
 fn extract_chapter_number(title: &str) -> Option<f32> {
-	// This handles cases like "第183话 180" where 180 is the actual chapter
-	let re1 =
-		Regex::new(r"(?:第\s*\d+(?:\.\d+)?\s*(?:话|話|章|回|卷|册|冊)\s*)(\d+(?:\.\d+)?)").ok()?;
-	if let Some(captures) = re1.captures(title)
-		&& let Some(num_match) = captures.get(1)
-		&& let Ok(num) = num_match.as_str().parse::<f32>()
-	{
-		return Some(num);
+	for re in CHAPTER_RES.iter() {
+		if let Some(captures) = re.captures(title)
+			&& let Some(num_match) = captures.get(1)
+			&& let Ok(num) = num_match.as_str().parse::<f32>()
+		{
+			return Some(num);
+		}
 	}
-
-	// Second try: match "第X话" pattern where X is the chapter number
-	let re2 = Regex::new(r"(?:第\s*)(\d+(?:\.\d+)?)\s*(?:话|話|章|回|卷|册|冊)").ok()?;
-	if let Some(captures) = re2.captures(title)
-		&& let Some(num_match) = captures.get(1)
-		&& let Ok(num) = num_match.as_str().parse::<f32>()
-	{
-		return Some(num);
-	}
-
-	// Third try: match pure number at the beginning
-	let re3 = Regex::new(r"^(\d+(?:\.\d+)?)").ok()?;
-	if let Some(captures) = re3.captures(title)
-		&& let Some(num_match) = captures.get(1)
-		&& let Ok(num) = num_match.as_str().parse::<f32>()
-	{
-		Some(num)
-	} else {
-		None
-	}
+	None
 }
 
 pub struct ChapterList;
@@ -47,9 +42,10 @@ impl ChapterList {
 	pub fn get_chapters(manga_id: &str) -> Result<Vec<Chapter>> {
 		let ids = manga_id.split("/").collect::<Vec<&str>>();
 		let url = format!("{}/api/manga/get?mid={}&mode=all", API_URL, ids[1]);
+		let base_url = base_url()?;
 		let json: serde_json::Value = Request::get(url.clone())?
-			.header("Origin", BASE_URL)
-			.header("Referer", BASE_URL)
+			.header("Origin", &base_url)
+			.header("Referer", &base_url)
 			.send()?
 			.get_json()?;
 		let data = json
@@ -98,7 +94,7 @@ impl ChapterList {
 				.and_then(|v| v.as_str())
 				.unwrap_or(&id)
 				.to_string();
-			let url = format!("{}/manga/{}/{}", BASE_URL, ids[0], slug);
+			let url = format!("{}/manga/{}/{}", base_url, ids[0], slug);
 			let chapter = (index + 1) as f32;
 			let chapter_or_volume = extract_chapter_number(&title).unwrap_or(chapter);
 
